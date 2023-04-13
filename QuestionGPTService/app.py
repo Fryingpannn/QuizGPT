@@ -5,9 +5,12 @@ import requests
 from flask import Flask
 import threading
 from utils import MOCK_RESPONSE, gpt_prompt, is_approved_sender
+import logging
 
 app = Flask(__name__)
 env = os.environ["ENVIRONMENT"]
+
+logging.basicConfig(level=logging.DEBUG)
 
 # RabbitMQ configurations
 RABBITMQ_HOST = "localhost" if env == "dev" else os.environ["RABBITMQ_HOSTNAME"]
@@ -62,26 +65,6 @@ def chatgpt_request(prompt, nb_questions, max_tokens=200):
     except Exception as e:
         print("Error occured while sending request to ChatGPT API: ", e)
 
-def rabbitmq_connection():
-    global GLOBAL_RMQ_CHANNEL
-    print("Starting RabbitMQ connection.")
-    if env == "dev":
-        print("Using dev RabbitMQ connection.")
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST))
-    else:
-        credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
-        connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, port=RABBITMQ_PORT, virtual_host=RABBITMQ_USER, credentials=credentials))
-    if connection.is_open:
-        print(f"Successfully connected to RabbitMQ at {RABBITMQ_HOST}")
-    else:
-        print(f"Failed to connect to RabbitMQ at {RABBITMQ_HOST}")
-        return None
-    print("Creating channel")
-    GLOBAL_RMQ_CHANNEL = connection.channel()
-    print("Creating queues")
-    GLOBAL_RMQ_CHANNEL.queue_declare(queue=INPUT_QUEUE)
-    GLOBAL_RMQ_CHANNEL.queue_declare(queue=OUTPUT_QUEUE)
-
 def parse_qa_pairs(text):
     questions = text.split("\n\n")
     formatted_questions = []
@@ -133,7 +116,25 @@ def callback(ch, method, properties, body):
 def start_consuming():
     try:
         global GLOBAL_RMQ_CHANNEL
-        rabbitmq_connection()
+        print("Starting RabbitMQ connection.")
+        if env == "dev":
+            print("Using dev RabbitMQ connection.")
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST))
+        else:
+            print("Using prod RabbitMQ connection.")
+            credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASSWORD)
+            connection = pika.BlockingConnection(pika.ConnectionParameters(host=RABBITMQ_HOST, port=RABBITMQ_PORT, virtual_host=RABBITMQ_USER, credentials=credentials))
+        print("Testing connection...")
+        if connection.is_open:
+            print(f"Successfully connected to RabbitMQ at {RABBITMQ_HOST}")
+        else:
+            print(f"Failed to connect to RabbitMQ at {RABBITMQ_HOST}")
+            return None
+        print("Creating channel")
+        GLOBAL_RMQ_CHANNEL = connection.channel()
+        print("Creating queues")
+        GLOBAL_RMQ_CHANNEL.queue_declare(queue=INPUT_QUEUE)
+        GLOBAL_RMQ_CHANNEL.queue_declare(queue=OUTPUT_QUEUE)
         if GLOBAL_RMQ_CHANNEL is None:
             print("Error connecting to input queue. Exiting...")
             return "Channel is None"
@@ -143,7 +144,7 @@ def start_consuming():
         GLOBAL_RMQ_CHANNEL.start_consuming()
         return "Consuming..."
     except Exception as e:
-        print('Error occured durring consuming')
+        print('Error occured during consuming')
         print(e)
 
 
@@ -214,14 +215,17 @@ def home():
     return "<h1>Question GPT Service is now running.</h1>"
 
 # Go to root home page to start the connection with rabbitmq
-@app.before_first_request
-def startup():
-    print('Starting RabbitMQ thread')
-    rabbitmq_thread = threading.Thread(target=start_consuming)
-    rabbitmq_thread.start()
-
+# @app.before_first_request
+# def startup():
+#     print('Starting RabbitMQ thread')
+#     rabbitmq_thread = threading.Thread(target=start_consuming)
+#     rabbitmq_thread.start()
+print('Starting Flask app. Environment: ', env)
+print('Starting RabbitMQ thread')
+app.logger.info('Logging test')
+rabbitmq_thread = threading.Thread(target=start_consuming)
+rabbitmq_thread.start()
 if __name__ == "__main__":
-    print('Starting Flask app. Environment: ', env)
     if env == "dev":
         print("In dev environment.")
-        app.run(host="0.0.0.0", port=5000)
+        app.run(debug=True)
